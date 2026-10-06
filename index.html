@@ -26,7 +26,7 @@ svg{width:100%;height:100%;display:block;background:var(--bg)}
 #map{height:100%}
 #legend{position:absolute;left:10px;bottom:10px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12px;max-height:40%;overflow:auto;z-index:500}
 #legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}
-#info{position:absolute;right:10px;top:10px;width:250px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px;font-size:12px;z-index:500}
+#info{max-height:calc(100% - 20px);overflow:auto;position:absolute;right:10px;top:10px;width:250px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px;font-size:12px;z-index:500}
 #info h3{margin:0 0 4px;font-size:14px}
 .node rect{stroke:#0004;rx:4}.node text{font-size:10px;fill:#111;pointer-events:none}
 .link{fill:none;stroke:var(--line);stroke-width:1.2}
@@ -70,7 +70,7 @@ svg{width:100%;height:100%;display:block;background:var(--bg)}
 const P = DATA.people, F = DATA.fams;
 const people = Object.values(P);
 let focusId = DATA.root;
-const S = {scope:"either", country:"", region:"", city:"", surname:"", sex:"", side:"", from:"", to:"", amin:"", amax:"", mil:false, q:"", prune:false, depth:6};
+const S = {scope:"either", country:"", region:"", city:"", surname:"", sex:"", side:"", from:"", to:"", amin:"", amax:"", mil:false, rec:"", q:"", prune:false, depth:6};
 const $ = s => document.querySelector(s);
 const parents = p => { const f = F[p.famc]; return f ? [f.h, f.w].filter(x => x && P[x]) : []; };
 const kids = p => p.fams.flatMap(s => F[s] ? F[s].c : []).filter(x => P[x]);
@@ -81,7 +81,7 @@ const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;"
 /* ---------- filters ---------- */
 const uniq = a => [...new Set(a.filter(Boolean))].sort();
 function scopePlaces(p){ return S.scope==="birth"?[p.bp]:S.scope==="death"?[p.dp]:[p.bp,p.dp]; }
-function filtersActive(){ return S.country||S.region||S.city||S.surname||S.sex||S.side||S.from!==""||S.to!==""||S.amin!==""||S.amax!==""||S.mil||S.q; }
+function filtersActive(){ return S.country||S.region||S.city||S.surname||S.sex||S.side||S.from!==""||S.to!==""||S.amin!==""||S.amax!==""||S.mil||S.rec||S.q; }
 function matches(p){
   if(!filtersActive()) return true;
   if(p.living) return false;
@@ -98,7 +98,14 @@ function matches(p){
   if(S.amin!=="" && !(p.age!=null && p.age>=+S.amin)) return false;
   if(S.amax!=="" && !(p.age!=null && p.age<=+S.amax)) return false;
   if(S.mil && !p.military) return false;
-  if(S.q && !p.name.toLowerCase().includes(S.q.toLowerCase())) return false;
+  if(S.rec){
+    const ok = S.rec==="any" ? p.media.length : S.rec==="cem" ? p.media.some(m=>m.cem||/cemetery|cem\./i.test(m.desc+m.title)) : p.media.some(m=>m.type===S.rec);
+    if(!ok) return false;
+  }
+  if(S.q){
+    const q = S.q.toLowerCase();
+    if(!p.name.toLowerCase().includes(q) && !p.media.some(m=>(m.title+" "+m.desc+" "+m.cem).toLowerCase().includes(q))) return false;
+  }
   return true;
 }
 let M = new Set();
@@ -120,11 +127,12 @@ function buildFilters(){
    <label>Age at death ≥<input id="f-amin" type="number"></label>
    <label>≤<input id="f-amax" type="number"></label>
    <label>Military note<input id="f-mil" type="checkbox"></label>
-   <label>Name<input id="f-q" placeholder="search"></label>
+   <label>Records<select id="f-rec"><option value="">Any</option><option value="any">Has any record</option><option value="headstone">Headstone</option><option value="document">Document</option><option value="portrait">Portrait</option><option value="story">Story</option><option value="cem">Cemetery mentioned</option></select></label>
+   <label>Name / record text<input id="f-q" placeholder="search"></label>
    <label>Hide non-matches<input id="f-prune" type="checkbox"></label>
    <label>Tree depth <span id="dv">6</span><input id="f-depth" type="range" min="2" max="12" value="6"></label>
    <button class="sm" id="reset">Reset</button><span id="count"></span>`;
-  const map = {scope:"scope",country:"country",region:"region",city:"city",surname:"surname",sex:"sex",side:"side",from:"from",to:"to",amin:"amin",amax:"amax",q:"q"};
+  const map = {scope:"scope",country:"country",region:"region",city:"city",surname:"surname",sex:"sex",side:"side",rec:"rec",from:"from",to:"to",amin:"amin",amax:"amax",q:"q"};
   for(const [k,id] of Object.entries(map)) $("#f-"+id).addEventListener("input", e => {
     S[k]=e.target.value;
     if(k==="country"){ $("#f-region").innerHTML = opt(regionsFor(S.country),"All"); S.region=""; }
@@ -133,7 +141,7 @@ function buildFilters(){
   $("#f-mil").onchange = e => { S.mil=e.target.checked; refresh(); };
   $("#f-prune").onchange = e => { S.prune=e.target.checked; refresh(); };
   $("#f-depth").oninput = e => { S.depth=+e.target.value; $("#dv").textContent=S.depth; refresh(); };
-  $("#reset").onclick = () => { buildFilters(); Object.assign(S,{scope:"either",country:"",region:"",city:"",surname:"",sex:"",side:"",from:"",to:"",amin:"",amax:"",mil:false,q:"",prune:false,depth:6}); refresh(); };
+  $("#reset").onclick = () => { buildFilters(); Object.assign(S,{scope:"either",country:"",region:"",city:"",surname:"",sex:"",side:"",from:"",to:"",amin:"",amax:"",mil:false,rec:"",q:"",prune:false,depth:6}); refresh(); };
 }
 
 /* ---------- color ---------- */
@@ -171,6 +179,8 @@ function showInfo(p){
   el.innerHTML = `<h3>${esc(p.name)}</h3><div>${yrs(p)}${p.age!=null?` · age ${p.age}`:""}</div>
    <div><b>Born:</b> ${esc(p.bdate||"?")}<br>${pl(p.bp)}</div><div><b>Died:</b> ${esc(p.ddate||"?")}<br>${pl(p.dp)}</div>
    <div>${p.nchild} children${p.side?` · ${p.side} line`:""}${p.gen!=null?` · generation ${p.gen}`:""}${p.military?" · military note":""}</div>
+   ${p.media.length?`<div style="margin-top:6px"><b>Records (${p.media.length})</b>${p.media.slice(0,12).map(m=>`<div style="border-top:1px solid var(--line);margin-top:3px;padding-top:3px"><i>${esc(m.type)}</i>${m.title?` · ${esc(m.title)}`:""}${m.desc&&m.desc!==m.title?`<br><span style="color:var(--mute)">${esc(m.desc.length>200?m.desc.slice(0,200)+"…":m.desc)}</span>`:""}${m.cem?`<br>Cemetery: ${esc(m.cem)}`:""}</div>`).join("")}${p.media.length>12?`<div>…and ${p.media.length-12} more</div>`:""}</div>`:""}
+   ${p.portraits?`<div style="color:var(--mute)">${p.portraits} portrait photo(s) on Ancestry</div>`:""}
    <p><button class="sm" id="refocus">Focus tree here</button> <button class="sm" onclick="this.closest('#info').hidden=true">Close</button></p>`;
   $("#refocus").onclick = () => { setFocus(p.id); };
 }
@@ -280,8 +290,9 @@ function drawMap(){
     layer = L.layerGroup().addTo(map); mapInit = true;
     $("#maptools").innerHTML = `<select id="mevent"><option value="both">Births + deaths</option><option value="birth">Births</option><option value="death">Deaths</option></select>
       <label><input type="checkbox" id="mlines" checked> Birth→death lines</label>
+      <label><input type="checkbox" id="mcem"> Cemetery / headstone records</label>
       <button class="sm" id="mplay">▶</button><input type="range" id="myear" min="1500" max="2025" value="2025" style="width:220px"><b id="myv">≤2025</b>`;
-    ["mevent","mlines","myear"].forEach(id => $("#"+id).addEventListener("input", drawMap));
+    ["mevent","mlines","mcem","myear"].forEach(id => $("#"+id).addEventListener("input", drawMap));
     $("#myear").addEventListener("input", e => { $("#myv").textContent = "≤"+e.target.value; });
     $("#mplay").onclick = () => {
       if(playTimer){ clearInterval(playTimer); playTimer=null; $("#mplay").textContent="▶"; return; }
@@ -304,6 +315,15 @@ function drawMap(){
     if(ev!=="birth") add(p,p.dp,"d");
     if($("#mlines").checked && ev==="both" && p.bp?.ll && p.dp?.ll && p.bp.q!==p.dp.q && (p.by==null||p.by<=yr))
       L.polyline([p.bp.ll,p.dp.ll],{color:colorOf(p),weight:1.2,opacity:.45}).addTo(layer);
+  }
+  if($("#mcem").checked){
+    for(const p of people){
+      if(!matches(p) || !p.dp?.ll) continue;
+      const ms = p.media.filter(m=>m.type==="headstone"||m.cem||/cemetery|cem\./i.test(m.title+m.desc));
+      if(!ms.length || (p.dy!=null && p.dy>yr)) continue;
+      L.marker(p.dp.ll,{icon:L.divIcon({className:"",html:'<div style="width:11px;height:11px;background:#111;border:2px solid #fff;transform:rotate(45deg)"></div>',iconSize:[11,11]})})
+        .bindPopup(`<b>${esc(p.name)}</b> ${yrs(p)}<br>${ms.map(m=>esc(m.cem||m.title||m.desc)).join("<br>")}<br><i>${esc(p.dp.raw)}</i>`).addTo(layer);
+    }
   }
   for(const v of byPt.values()){
     const c = d3.rollup(v.items, a=>a.length, i=>colorKey(i.p)), top = [...c].sort((a,b)=>b[1]-a[1])[0][0];
@@ -346,7 +366,9 @@ function drawStats(){
     bars("Top surnames", top(L.map(p=>p.surname), 15)) + bars("People by century born", top(L.filter(p=>p.by).map(p=>cent(p.by)),30).sort((a,b)=>a[0].localeCompare(b[0]))) +
     bars("Avg age at death by birth century", byCent, v=>v+" yrs") + bars("Avg children by birth century", kidsAvg) +
     bars("Country-to-country moves (birth → death)", mig) + bars("Sex", top(L.map(p=>p.sex==="M"?"Male":p.sex==="F"?"Female":"Unknown"))) +
-    bars("Line", top(L.map(p=>p.side))) ;
+    bars("Line", top(L.map(p=>p.side))) +
+    bars("Record types attached", top(L.flatMap(p=>p.media.map(m=>m.type)))) +
+    bars("Cemeteries named", top(L.flatMap(p=>p.media.map(m=>m.cem))));
 }
 
 /* ---------- orchestration ---------- */

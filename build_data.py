@@ -59,6 +59,17 @@ def subval(node, *path):
     return node["val"] if node else None
 
 
+def find(node, tag):
+    """First value of `tag` anywhere beneath node."""
+    for k in node["kids"]:
+        if k["tag"] == tag:
+            return k["val"]
+        v = find(k, tag)
+        if v:
+            return v
+    return None
+
+
 def year(s):
     m = re.findall(r"\b(1[0-9]{3}|20[0-2][0-9])\b", s or "")
     return int(m[0]) if m else None
@@ -130,12 +141,23 @@ def make_resolver():
 
 def main():
     recs = parse_records(GED.read_text(encoding="utf-8-sig"))
-    people, fams = {}, {}
+    people, fams, media = {}, {}, {}
+    for r in recs:
+        if r["type"] == "OBJE":
+            file_ = sub(r, "FILE") or {"kids": []}
+            meta = subval(r, "_META") or ""
+            cem = re.search(r"<cemetery>([^<]+)</cemetery>", meta)
+            media[r["id"]] = {
+                "type": find(file_, "_MTYPE") or "other",
+                "title": subval(file_, "TITL") or "",
+                "desc": (subval(r, "_DSCR") or "").strip(),
+                "cem": cem.group(1).strip() if cem else "",
+            }
     for r in recs:
         if r["type"] == "INDI":
             nm = subval(r, "NAME") or ""
             famc = subval(r, "FAMC")
-            descs = [(subval(o, "_DSCR") or "").lower() for o in r["kids"] if o["tag"] == "OBJE"]
+            refs = [k["val"].strip("@") for k in r["kids"] if k["tag"] == "OBJE"]
             people[r["id"]] = {
                 "id": r["id"], "name": re.sub(r"\s+", " ", nm.replace("/", "")).strip() or "Unknown",
                 "surname": (subval(r, "NAME", "SURN") or "").strip(), "sex": subval(r, "SEX") or "U",
@@ -145,7 +167,7 @@ def main():
                 "famc": famc.strip("@") if famc else None,
                 "fams": [k["val"].strip("@") for k in r["kids"] if k["tag"] == "FAMS"],
                 "deatTag": sub(r, "DEAT") is not None,
-                "military": any(re.search(r"veteran|war|soldier|militia", d) for d in descs),
+                "refs": refs,
             }
         elif r["type"] == "FAM":
             fams[r["id"]] = {
@@ -181,6 +203,12 @@ def main():
         mark(f["h"], "Paternal")
         mark(f["w"], "Maternal")
 
+    for p in people.values():
+        # keep only records with something to show; portraits with no text are just counted
+        items = [media[x] for x in p.pop("refs") if x in media]
+        p["portraits"] = sum(1 for m in items if m["type"] == "portrait" and not (m["title"] or m["desc"]))
+        p["media"] = [m for m in items if m["title"] or m["desc"] or m["cem"] or m["type"] != "portrait"]
+        p["military"] = any(re.search(r"veteran|war|soldier|militia", (m["title"] + " " + m["desc"]).lower()) for m in p["media"])
     for pid, p in people.items():
         p["gen"], p["side"] = gen.get(pid), side.get(pid)
         p["nchild"] = sum(len(fams[s]["c"]) for s in p["fams"] if s in fams)
@@ -192,7 +220,7 @@ def main():
     resolve = make_resolver()
     for p in people.values():
         if p["living"]:
-            p.update(name="Living", surname="", bdate=None, ddate=None, bp=None, dp=None, by=None, dy=None, military=False)
+            p.update(name="Living", surname="", bdate=None, ddate=None, bp=None, dp=None, by=None, dy=None, military=False, media=[], portraits=0)
             continue
         for k in ("bp", "dp"):
             if p[k]:

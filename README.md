@@ -2,7 +2,9 @@
 
 An interactive, static website for exploring a family tree exported from Ancestry as a GEDCOM file (1,108 people, 656 families).
 
-## Viewing the site
+**Live site: https://jgmiller3405-coder.github.io/family-tree-explorer/**
+
+## Viewing the site locally
 
 ```
 git clone https://github.com/jgmiller3405-coder/family-tree-explorer
@@ -47,4 +49,4 @@ The GEDCOM has no occupation or residence fields, so job and "lived" filters are
 
 ## Rebuilding the data
 
-`build_data.py` reads `~/Ancestry/Mill A Family Tree.ged` and writes `data.js`, which the page loads. It needs `geonamescache`, so run it from the `fda-python` project with `uv run python ancestry-site/build_data.py`. `data.js` contains personal information about the people in the tree, so keep this repository private.
+`build_data.py` reads `~/Ancestry/Mill A Family Tree.ged` and writes `data.js`, which the page loads. It needs `geonamescache`, so run it from the `fda-python` project with `uv run python ancestry-site/build_data.py`. `data.js` contains personal information about the people in the tree, so check the redaction rules in `build_data.py` before publishing changes.

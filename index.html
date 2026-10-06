@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Miller Family Tree Explorer</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{--bg:#f6f4ef;--panel:#fff;--ink:#222;--mute:#6b6b6b;--line:#ddd8cc;--accent:#2f6f5e}
+@media (prefers-color-scheme:dark){:root{--bg:#171a19;--panel:#1f2322;--ink:#e8e8e3;--mute:#9a9a94;--line:#34393a;--accent:#6fc2a8}}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.4 system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
+header{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+h1{font-size:18px;margin:0}
+nav{display:flex;gap:4px;flex-wrap:wrap}
+nav button{border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:6px 12px;border-radius:6px;cursor:pointer}
+nav button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+#filters{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+#filters label{display:flex;flex-direction:column;font-size:11px;color:var(--mute);gap:2px}
+select,input,button.sm{font:inherit;padding:4px 6px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--ink);max-width:170px}
+input[type=number]{width:78px}input[type=range]{padding:0}
+#count{margin-left:auto;color:var(--mute);font-size:12px}
+main{position:relative;height:calc(100vh - 150px);min-height:480px}
+.tab{display:none;position:absolute;inset:0}.tab.on{display:block}
+svg{width:100%;height:100%;display:block;background:var(--bg)}
+#map{height:100%}
+#legend{position:absolute;left:10px;bottom:10px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12px;max-height:40%;overflow:auto;z-index:500}
+#legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}
+#info{position:absolute;right:10px;top:10px;width:250px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px;font-size:12px;z-index:500}
+#info h3{margin:0 0 4px;font-size:14px}
+.node rect{stroke:#0004;rx:4}.node text{font-size:10px;fill:#111;pointer-events:none}
+.link{fill:none;stroke:var(--line);stroke-width:1.2}
+.dim{opacity:.18}
+.node{cursor:pointer}
+.stats{padding:16px;overflow:auto;height:100%;display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;align-content:start}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}
+.card h3{margin:0 0 8px;font-size:13px}
+.bar{display:flex;align-items:center;gap:6px;font-size:12px;margin:2px 0}
+.bar span.l{width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar div{background:var(--accent);height:12px;border-radius:2px}
+.bar span.v{color:var(--mute)}
+#maptools{position:absolute;top:10px;left:56px;z-index:500;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px;display:flex;gap:8px;align-items:center;font-size:12px}
+.scroll{overflow:auto;height:100%}
+</style>
+</head>
+<body>
+<header>
+  <h1>Miller Family Tree Explorer</h1>
+  <nav id="nav"></nav>
+  <label style="font-size:11px;color:var(--mute)">Focus person<br><input id="focus" list="plist" placeholder="Search name…" style="width:200px"></label>
+  <datalist id="plist"></datalist>
+  <label style="font-size:11px;color:var(--mute)">Color by<br>
+    <select id="colorBy"><option value="country">Birth country</option><option value="state">Birth state/region</option><option value="side">Paternal/Maternal</option><option value="century">Century born</option><option value="sex">Sex</option><option value="gen">Generation</option><option value="age">Age at death</option></select></label>
+</header>
+<section id="filters"></section>
+<main>
+  <div class="tab" id="t-pedigree"><svg></svg></div>
+  <div class="tab" id="t-descendants"><svg></svg></div>
+  <div class="tab" id="t-fan"><svg></svg></div>
+  <div class="tab" id="t-map"><div id="maptools"></div><div id="map"></div></div>
+  <div class="tab" id="t-timeline"><div class="scroll"><svg style="height:auto"></svg></div></div>
+  <div class="tab" id="t-stats"><div class="stats"></div></div>
+  <div id="legend"></div>
+  <div id="info" hidden></div>
+</main>
+<script src="https://unpkg.com/d3@7/dist/d3.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="data.js"></script>
+<script>
+const P = DATA.people, F = DATA.fams;
+const people = Object.values(P);
+let focusId = DATA.root;
+const S = {scope:"either", country:"", region:"", city:"", surname:"", sex:"", side:"", from:"", to:"", amin:"", amax:"", mil:false, q:"", prune:false, depth:6};
+const $ = s => document.querySelector(s);
+const parents = p => { const f = F[p.famc]; return f ? [f.h, f.w].filter(x => x && P[x]) : []; };
+const kids = p => p.fams.flatMap(s => F[s] ? F[s].c : []).filter(x => P[x]);
+const yrs = p => p.living ? "living" : `${p.by ?? "?"}–${p.dy ?? "?"}`;
+const place = p => [p.bp, p.dp];
+const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+/* ---------- filters ---------- */
+const uniq = a => [...new Set(a.filter(Boolean))].sort();
+function scopePlaces(p){ return S.scope==="birth"?[p.bp]:S.scope==="death"?[p.dp]:[p.bp,p.dp]; }
+function filtersActive(){ return S.country||S.region||S.city||S.surname||S.sex||S.side||S.from!==""||S.to!==""||S.amin!==""||S.amax!==""||S.mil||S.q; }
+function matches(p){
+  if(!filtersActive()) return true;
+  if(p.living) return false;
+  if(S.country||S.region||S.city){
+    const ok = scopePlaces(p).some(pl => pl && (!S.country||pl.country===S.country) && (!S.region||pl.region===S.region) && (!S.city||(pl.city||"").toLowerCase().includes(S.city.toLowerCase())||pl.raw.toLowerCase().includes(S.city.toLowerCase())));
+    if(!ok) return false;
+  }
+  if(S.surname && p.surname!==S.surname) return false;
+  if(S.sex && p.sex!==S.sex) return false;
+  if(S.side && p.side!==S.side) return false;
+  const y = p.by ?? p.dy;
+  if(S.from!=="" && !(y>=+S.from)) return false;
+  if(S.to!=="" && !(y<=+S.to)) return false;
+  if(S.amin!=="" && !(p.age!=null && p.age>=+S.amin)) return false;
+  if(S.amax!=="" && !(p.age!=null && p.age<=+S.amax)) return false;
+  if(S.mil && !p.military) return false;
+  if(S.q && !p.name.toLowerCase().includes(S.q.toLowerCase())) return false;
+  return true;
+}
+let M = new Set();
+function buildFilters(){
+  const countries = uniq(people.flatMap(p => [p.bp?.country, p.dp?.country]));
+  const surnames = uniq(people.map(p => p.surname));
+  const regionsFor = c => uniq(people.flatMap(p => [p.bp, p.dp]).filter(x => x && (!c || x.country===c)).map(x => x.region));
+  const opt = (a, all) => `<option value="">${all}</option>` + a.map(x => `<option>${esc(x)}</option>`).join("");
+  $("#filters").innerHTML = `
+   <label>Place type<select id="f-scope"><option value="either">Birth or death</option><option value="birth">Birth place</option><option value="death">Death place</option></select></label>
+   <label>Country<select id="f-country">${opt(countries,"All")}</select></label>
+   <label>State / region<select id="f-region">${opt(regionsFor(""),"All")}</select></label>
+   <label>City contains<input id="f-city" placeholder="e.g. Boston"></label>
+   <label>Surname<select id="f-surname">${opt(surnames,"All")}</select></label>
+   <label>Sex<select id="f-sex"><option value="">All</option><option value="M">Male</option><option value="F">Female</option></select></label>
+   <label>Line<select id="f-side"><option value="">All</option><option>Paternal</option><option>Maternal</option></select></label>
+   <label>Born from<input id="f-from" type="number" placeholder="1500"></label>
+   <label>Born to<input id="f-to" type="number" placeholder="1900"></label>
+   <label>Age at death ≥<input id="f-amin" type="number"></label>
+   <label>≤<input id="f-amax" type="number"></label>
+   <label>Military note<input id="f-mil" type="checkbox"></label>
+   <label>Name<input id="f-q" placeholder="search"></label>
+   <label>Hide non-matches<input id="f-prune" type="checkbox"></label>
+   <label>Tree depth <span id="dv">6</span><input id="f-depth" type="range" min="2" max="12" value="6"></label>
+   <button class="sm" id="reset">Reset</button><span id="count"></span>`;
+  const map = {scope:"scope",country:"country",region:"region",city:"city",surname:"surname",sex:"sex",side:"side",from:"from",to:"to",amin:"amin",amax:"amax",q:"q"};
+  for(const [k,id] of Object.entries(map)) $("#f-"+id).addEventListener("input", e => {
+    S[k]=e.target.value;
+    if(k==="country"){ $("#f-region").innerHTML = opt(regionsFor(S.country),"All"); S.region=""; }
+    refresh();
+  });
+  $("#f-mil").onchange = e => { S.mil=e.target.checked; refresh(); };
+  $("#f-prune").onchange = e => { S.prune=e.target.checked; refresh(); };
+  $("#f-depth").oninput = e => { S.depth=+e.target.value; $("#dv").textContent=S.depth; refresh(); };
+  $("#reset").onclick = () => { buildFilters(); Object.assign(S,{scope:"either",country:"",region:"",city:"",surname:"",sex:"",side:"",from:"",to:"",amin:"",amax:"",mil:false,q:"",prune:false,depth:6}); refresh(); };
+}
+
+/* ---------- color ---------- */
+const palette = [...d3.schemeTableau10, ...d3.schemeSet3];
+let colorScale, colorKeys = [];
+function colorKey(p){
+  switch($("#colorBy").value){
+    case "country": return p.bp?.country || "Unknown";
+    case "state": return p.bp?.region || p.bp?.country || "Unknown";
+    case "side": return p.side || (p.id===DATA.root?"Self":"Other");
+    case "century": { const y=p.by??p.dy; return y? `${Math.floor(y/100)+1}th c.`.replace(/^(\d+)th/, (m,n)=>n+({1:"st",2:"nd",3:"rd"}[n%10]&&!/1[123]$/.test(n)?({1:"st",2:"nd",3:"rd"}[n%10]):"th")) : "Unknown"; }
+    case "sex": return p.sex==="M"?"Male":p.sex==="F"?"Female":"Unknown";
+    case "gen": return p.gen==null ? "Not a direct ancestor" : "Gen "+String(p.gen).padStart(2,"0");
+    case "age": return p.age==null?"Unknown":p.age<40?"<40":p.age<60?"40–59":p.age<80?"60–79":"80+";
+  }
+}
+function setupColor(){
+  const keys = new Map(); people.forEach(p => keys.set(colorKey(p), (keys.get(colorKey(p))||0)+1));
+  colorKeys = [...keys].sort((a,b)=>b[1]-a[1]).map(x=>x[0]);
+  if($("#colorBy").value==="gen"||$("#colorBy").value==="age"||$("#colorBy").value==="century") colorKeys.sort();
+  colorScale = k => k==="Unknown"?"#bbb":palette[colorKeys.indexOf(k) % palette.length];
+  $("#legend").innerHTML = colorKeys.slice(0,18).map(k => `<div><i style="background:${colorScale(k)}"></i>${esc(k)}</div>`).join("") + (colorKeys.length>18?`<div>…+${colorKeys.length-18} more</div>`:"");
+}
+const colorOf = p => colorScale(colorKey(p));
+
+/* ---------- tabs ---------- */
+const tabs = [["pedigree","Pedigree"],["descendants","Descendants"],["fan","Fan chart"],["map","Map"],["timeline","Timeline"],["stats","Stats"]];
+let current = "pedigree";
+$("#nav").innerHTML = tabs.map(([id,l]) => `<button data-t="${id}">${l}</button>`).join("");
+$("#nav").onclick = e => { if(e.target.dataset.t){ current=e.target.dataset.t; refresh(); } };
+
+function showInfo(p){
+  const el = $("#info"); el.hidden = false;
+  const pl = x => x ? esc(x.raw) : "—";
+  el.innerHTML = `<h3>${esc(p.name)}</h3><div>${yrs(p)}${p.age!=null?` · age ${p.age}`:""}</div>
+   <div><b>Born:</b> ${esc(p.bdate||"?")}<br>${pl(p.bp)}</div><div><b>Died:</b> ${esc(p.ddate||"?")}<br>${pl(p.dp)}</div>
+   <div>${p.nchild} children${p.side?` · ${p.side} line`:""}${p.gen!=null?` · generation ${p.gen}`:""}${p.military?" · military note":""}</div>
+   <p><button class="sm" id="refocus">Focus tree here</button> <button class="sm" onclick="this.closest('#info').hidden=true">Close</button></p>`;
+  $("#refocus").onclick = () => { setFocus(p.id); };
+}
+function setFocus(id){ focusId = id; $("#focus").value = P[id].name; refresh(); }
+
+function zoomSvg(svg, g){
+  const z = d3.zoom().scaleExtent([.05,4]).on("zoom", e => g.attr("transform", e.transform));
+  svg.call(z).on("dblclick.zoom", null);
+  return z;
+}
+function fit(svg, g, z){
+  const b = g.node().getBBox(), w = svg.node().clientWidth, h = svg.node().clientHeight;
+  if(!b.width) return;
+  const k = Math.min(1, .95*Math.min(w/b.width, h/b.height));
+  svg.call(z.transform, d3.zoomIdentity.translate(w/2-(b.x+b.width/2)*k, h/2-(b.y+b.height/2)*k).scale(k));
+}
+
+function ancestorTree(id, depth){
+  const build = (pid, d) => ({p:P[pid], children: d<depth ? parents(P[pid]).map(x => build(x, d+1)) : []});
+  return build(id, 0);
+}
+function prune(node){            // keep a node if it, or anything above it, matches
+  const keep = n => { n.children = n.children.filter(keep); return matches(n.p) || n.children.length>0 || n.keepSelf; };
+  return keep(node);
+}
+
+function drawTree(svgSel, root, horizontalDir){
+  const svg = d3.select(svgSel); svg.selectAll("*").remove();
+  const g = svg.append("g"); const z = zoomSvg(svg, g);
+  const h = d3.hierarchy(root);
+  d3.tree().nodeSize([36, 190])(h);
+  const dir = horizontalDir;
+  g.selectAll(".link").data(h.links()).join("path").attr("class","link")
+    .attr("d", d3.linkHorizontal().x(d => dir*d.y).y(d => d.x));
+  const n = g.selectAll(".node").data(h.descendants()).join("g").attr("class", d => "node"+(matches(d.data.p)?"":" dim"))
+    .attr("transform", d => `translate(${dir*d.y},${d.x})`).on("click", (e,d) => showInfo(d.data.p));
+  n.append("rect").attr("x",-80).attr("y",-15).attr("width",160).attr("height",30).attr("fill", d => colorOf(d.data.p));
+  n.append("text").attr("y",-2).attr("text-anchor","middle").text(d => d.data.p.name.length>26?d.data.p.name.slice(0,25)+"…":d.data.p.name);
+  n.append("text").attr("y",9).attr("text-anchor","middle").style("font-size","9px").text(d => yrs(d.data.p) + (d.data.p.bp?.region||d.data.p.bp?.country?` · ${d.data.p.bp.region||d.data.p.bp.country}`:""));
+  setTimeout(() => fit(svg, g, z), 0);
+  return {h, g, svg, z};
+}
+
+/* Pedigree: ancestors, growing to the right */
+function drawPedigree(){
+  const t = ancestorTree(focusId, S.depth);
+  if(S.prune && filtersActive()){ t.keepSelf = true; prune(t); }
+  drawTree("#t-pedigree svg", t, 1);
+}
+
+/* Descendants: collapsible */
+let desc = {};
+function drawDescendants(){
+  const svg = d3.select("#t-descendants svg"); svg.selectAll("*").remove();
+  const g = svg.append("g"); const z = zoomSvg(svg, g);
+  const build = (pid, d) => ({p:P[pid], _open: d<2, kids: kids(P[pid]).sort((a,b)=>(P[a].by||9999)-(P[b].by||9999)).map(c => build(c, d+1))});
+  const rootData = desc[focusId] || (desc[focusId] = build(focusId, 0));
+  const hasMatch = n => matches(n.p) || n.kids.some(hasMatch);
+  function render(first){
+    const vis = n => ({p:n.p, src:n, children: n._open ? n.kids.filter(k => !(S.prune&&filtersActive()) || hasMatch(k)).map(vis) : []});
+    const h = d3.hierarchy(vis(rootData)); d3.tree().nodeSize([34,190])(h);
+    g.selectAll("*").remove();
+    g.selectAll(".link").data(h.links()).join("path").attr("class","link").attr("d", d3.linkHorizontal().x(d=>d.y).y(d=>d.x));
+    const n = g.selectAll(".node").data(h.descendants()).join("g").attr("class", d => "node"+(matches(d.data.p)?"":" dim")).attr("transform", d=>`translate(${d.y},${d.x})`)
+      .on("click", (e,d) => { showInfo(d.data.p); d.data.src._open = !d.data.src._open; render(false); });
+    n.append("rect").attr("x",-80).attr("y",-14).attr("width",160).attr("height",28).attr("fill", d=>colorOf(d.data.p));
+    n.append("text").attr("y",-2).attr("text-anchor","middle").text(d=>(d.data.p.name.length>24?d.data.p.name.slice(0,23)+"…":d.data.p.name) + (d.data.src.kids.length&&!d.data.src._open?` ＋${d.data.src.kids.length}`:""));
+    n.append("text").attr("y",9).attr("text-anchor","middle").style("font-size","9px").text(d=>yrs(d.data.p));
+    if(first) setTimeout(()=>fit(svg,g,z),0);
+  }
+  render(true);
+}
+
+/* Fan chart: ancestors in concentric rings */
+function drawFan(){
+  const svg = d3.select("#t-fan svg"); svg.selectAll("*").remove();
+  const g = svg.append("g"); const z = zoomSvg(svg, g);
+  const depth = Math.min(S.depth, 9), ring = 62;
+  const arc = d3.arc();
+  const cells = [];
+  (function walk(pid, gen, a0, a1){
+    cells.push({p:P[pid], gen, a0, a1});
+    if(gen>=depth) return;
+    const pr = parents(P[pid]), f = F[P[pid].famc], mid = (a0+a1)/2;
+    if(f?.h && P[f.h]) walk(f.h, gen+1, a0, mid);
+    if(f?.w && P[f.w]) walk(f.w, gen+1, mid, a1);
+  })(focusId, 0, -Math.PI*0.5*2*0.5*2/2*1, Math.PI*1.5);   // full circle starting at left
+  const cell = g.selectAll("g").data(cells).join("g").attr("class", d => matches(d.p)?"":"dim").style("cursor","pointer").on("click",(e,d)=>showInfo(d.p));
+  cell.append("path").attr("d", d => d.gen===0 ? d3.arc()({innerRadius:0,outerRadius:ring*.9,startAngle:0,endAngle:2*Math.PI}) : arc({innerRadius:d.gen*ring,outerRadius:(d.gen+1)*ring-1,startAngle:d.a0+Math.PI/2,endAngle:d.a1+Math.PI/2}))
+    .attr("fill", d=>colorOf(d.p)).attr("stroke", "#fff6").append("title").text(d=>`${d.p.name} ${yrs(d.p)}`);
+  cell.filter(d=>d.gen<=6).append("text").attr("font-size", d=>d.gen<3?10:8).attr("text-anchor","middle").attr("fill","#111").style("pointer-events","none")
+    .attr("transform", d => {
+      if(d.gen===0) return "";
+      const a=(d.a0+d.a1)/2+Math.PI/2, r=(d.gen+.5)*ring, deg=a*180/Math.PI-90, flip = deg>90&&deg<270;
+      return `rotate(${deg}) translate(${r},0)` + (flip?" rotate(180)":"") + (d.gen>=4?" rotate(0)":"");
+    })
+    .text(d => d.gen===0 ? d.p.name.split(" ").slice(-1)[0] : d.p.name.split(" ").slice(0, d.gen<3?3:2).join(" ").slice(0, d.gen<3?22:14));
+  setTimeout(()=>fit(svg,g,z),0);
+}
+
+/* Map */
+let map, layer, mapInit = false, mapYear = 2025, playTimer;
+function drawMap(){
+  if(!mapInit){
+    map = L.map("map",{preferCanvas:true}).setView([45,-40],3);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OpenStreetMap",maxZoom:12}).addTo(map);
+    layer = L.layerGroup().addTo(map); mapInit = true;
+    $("#maptools").innerHTML = `<select id="mevent"><option value="both">Births + deaths</option><option value="birth">Births</option><option value="death">Deaths</option></select>
+      <label><input type="checkbox" id="mlines" checked> Birth→death lines</label>
+      <button class="sm" id="mplay">▶</button><input type="range" id="myear" min="1500" max="2025" value="2025" style="width:220px"><b id="myv">≤2025</b>`;
+    ["mevent","mlines","myear"].forEach(id => $("#"+id).addEventListener("input", drawMap));
+    $("#myear").addEventListener("input", e => { $("#myv").textContent = "≤"+e.target.value; });
+    $("#mplay").onclick = () => {
+      if(playTimer){ clearInterval(playTimer); playTimer=null; $("#mplay").textContent="▶"; return; }
+      $("#mplay").textContent="⏸"; $("#myear").value = 1500;
+      playTimer = setInterval(() => { const v=+$("#myear").value+5; if(v>2025){ clearInterval(playTimer); playTimer=null; $("#mplay").textContent="▶"; return; } $("#myear").value=v; $("#myv").textContent="≤"+v; drawMap(); }, 120);
+    };
+  }
+  map.invalidateSize();
+  layer.clearLayers();
+  const ev = $("#mevent").value, yr = +$("#myear").value, byPt = new Map();
+  const add = (p, pl, kind) => {
+    if(!pl?.ll) return;
+    const y = kind==="b"?p.by:p.dy; if(y!=null && y>yr) return;
+    const k = pl.ll.join(","); if(!byPt.has(k)) byPt.set(k,{ll:pl.ll,name:pl.q,items:[]});
+    byPt.get(k).items.push({p,kind,y});
+  };
+  for(const p of people){
+    if(!matches(p)) continue;
+    if(ev!=="death") add(p,p.bp,"b");
+    if(ev!=="birth") add(p,p.dp,"d");
+    if($("#mlines").checked && ev==="both" && p.bp?.ll && p.dp?.ll && p.bp.q!==p.dp.q && (p.by==null||p.by<=yr))
+      L.polyline([p.bp.ll,p.dp.ll],{color:colorOf(p),weight:1.2,opacity:.45}).addTo(layer);
+  }
+  for(const v of byPt.values()){
+    const c = d3.rollup(v.items, a=>a.length, i=>colorKey(i.p)), top = [...c].sort((a,b)=>b[1]-a[1])[0][0];
+    L.circleMarker(v.ll,{radius:Math.min(26,4+Math.sqrt(v.items.length)*3),color:"#222",weight:1,fillColor:colorScale(top),fillOpacity:.75})
+      .bindPopup(`<b>${esc(v.name)}</b><br>${v.items.length} event(s)<br>` + v.items.slice(0,25).map(i=>`${i.kind==="b"?"b.":"d."} ${esc(i.p.name)} (${i.y??"?"})`).join("<br>") + (v.items.length>25?"<br>…":"")).addTo(layer);
+  }
+}
+
+/* Timeline */
+function drawTimeline(){
+  const svg = d3.select("#t-timeline svg"); svg.selectAll("*").remove();
+  const list = people.filter(p => !p.living && p.by!=null && matches(p)).sort((a,b)=>a.by-b.by);
+  const w = $("#t-timeline").clientWidth - 20, rh = 7, top = 30;
+  svg.attr("height", list.length*rh+top+10).attr("width", w);
+  const ext = d3.extent(list.flatMap(p => [p.by, p.dy ?? p.by+60]));
+  const x = d3.scaleLinear(ext[0] ? [ext[0]-5, ext[1]+5] : [1500,2025], [10, w-10]);
+  svg.append("g").attr("transform","translate(0,22)").call(d3.axisTop(x).tickFormat(d3.format("d"))).selectAll("text").attr("fill","currentColor");
+  svg.append("g").selectAll("rect").data(list).join("rect").attr("x",p=>x(p.by)).attr("y",(p,i)=>top+i*rh).attr("height",rh-2)
+    .attr("width",p=>Math.max(2,x(p.dy ?? p.by+(p.age??0))-x(p.by))).attr("fill",colorOf).attr("opacity",p=>p.dy?1:.5).style("cursor","pointer")
+    .on("click",(e,p)=>showInfo(p)).append("title").text(p=>`${p.name} ${yrs(p)} ${p.bp?.raw||""}`);
+}
+
+/* Stats */
+function bars(title, entries, fmt = d => d){
+  const mx = d3.max(entries, d=>d[1]) || 1;
+  return `<div class="card"><h3>${title}</h3>${entries.map(([k,v])=>`<div class="bar"><span class="l" title="${esc(k)}">${esc(k)}</span><div style="width:${v/mx*160}px"></div><span class="v">${fmt(v)}</span></div>`).join("") || "<i>No data</i>"}</div>`;
+}
+function drawStats(){
+  const L = people.filter(matches).filter(p=>!p.living);
+  const top = (arr, n=12) => [...d3.rollup(arr.filter(Boolean), a=>a.length, d=>d)].sort((a,b)=>b[1]-a[1]).slice(0,n);
+  const cent = y => `${Math.floor(y/100)*100}s`;
+  const byCent = d3.rollups(L.filter(p=>p.age!=null&&p.by), a=>d3.mean(a,p=>p.age), p=>cent(p.by)).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,v])=>[k,Math.round(v)]);
+  const mig = top(L.filter(p=>p.bp?.country&&p.dp?.country&&p.bp.country!==p.dp.country).map(p=>`${p.bp.country} → ${p.dp.country}`),10);
+  const mk = L.filter(p=>p.by).length;
+  const kidsAvg = d3.rollups(L.filter(p=>p.by&&p.nchild>0), a=>d3.mean(a,p=>p.nchild), p=>cent(p.by)).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,v])=>[k,+v.toFixed(1)]);
+  $("#t-stats .stats").innerHTML =
+    `<div class="card"><h3>Summary (filtered)</h3><div>${L.length} people · ${L.filter(p=>p.by).length} with birth year<br>Earliest birth: ${d3.min(L,p=>p.by)??"—"}<br>Avg age at death: ${(d3.mean(L,p=>p.age)||0).toFixed(1)}<br>Avg children: ${(d3.mean(L.filter(p=>p.nchild>0),p=>p.nchild)||0).toFixed(1)}<br>Military notes: ${L.filter(p=>p.military).length}</div></div>` +
+    bars("Birth countries", top(L.map(p=>p.bp?.country))) + bars("Birth states / regions", top(L.map(p=>p.bp?.region))) +
+    bars("Death countries", top(L.map(p=>p.dp?.country))) + bars("Birth cities", top(L.map(p=>p.bp?.city))) +
+    bars("Top surnames", top(L.map(p=>p.surname), 15)) + bars("People by century born", top(L.filter(p=>p.by).map(p=>cent(p.by)),30).sort((a,b)=>a[0].localeCompare(b[0]))) +
+    bars("Avg age at death by birth century", byCent, v=>v+" yrs") + bars("Avg children by birth century", kidsAvg) +
+    bars("Country-to-country moves (birth → death)", mig) + bars("Sex", top(L.map(p=>p.sex==="M"?"Male":p.sex==="F"?"Female":"Unknown"))) +
+    bars("Line", top(L.map(p=>p.side))) ;
+}
+
+/* ---------- orchestration ---------- */
+function refresh(){
+  M = new Set(people.filter(matches).map(p=>p.id));
+  $("#count").textContent = filtersActive() ? `${M.size} of ${people.length} match` : `${people.length} people`;
+  document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("on", b.dataset.t===current));
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t.id==="t-"+current));
+  $("#legend").style.display = current==="stats" ? "none" : "";
+  setupColor();
+  ({pedigree:drawPedigree, descendants:drawDescendants, fan:drawFan, map:drawMap, timeline:drawTimeline, stats:drawStats})[current]();
+}
+buildFilters();
+$("#plist").innerHTML = people.filter(p=>!p.living).sort((a,b)=>a.name.localeCompare(b.name)).map(p=>`<option value="${esc(p.name)}">${yrs(p)}</option>`).join("");
+$("#focus").value = P[focusId].name;
+$("#focus").addEventListener("change", e => { const m = people.filter(p=>p.name===e.target.value); if(m.length){ focusId = m.sort((a,b)=>(a.gen??99)-(b.gen??99))[0].id; refresh(); } });
+$("#colorBy").onchange = refresh;
+window.addEventListener("resize", () => { if(current==="timeline") refresh(); });
+refresh();
+</script>
+</body>
+</html>
